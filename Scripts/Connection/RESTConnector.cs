@@ -214,10 +214,6 @@ namespace IBM.Watson.DeveloperCloud.Connection
             /// </summary>
             public bool Delete { get; set; }
             /// <summary>
-            /// True to send a post method.
-            /// </summary>
-            public bool Post { get; set; }
-            /// <summary>
             /// The name of the function to invoke on the server.
             /// </summary>
             public string Function { get; set; }
@@ -233,6 +229,10 @@ namespace IBM.Watson.DeveloperCloud.Connection
             /// The data to send through the connection. Do not use Forms if set.
             /// </summary>
             public byte[] Send { get; set; }
+            /// <summary>
+            /// The data to send through the connection. Do not use Forms if set.
+            /// </summary>
+            public string BodyJson { get; set; }
             /// <summary>
             /// Multi-part form data that needs to be sent. Do not use Send if set.
             /// </summary>
@@ -560,8 +560,53 @@ namespace IBM.Watson.DeveloperCloud.Connection
                 else
                 {
                     float timeout = Mathf.Max(Constants.Config.Timeout, req.Timeout);
-                    WatsonRequest watsonRequest = new WatsonRequest();
-                    watsonRequest.HttpMethod = req.HttpMethod;
+                    WatsonRequest watsonRequest = null;
+
+                    if (req.Forms != null)
+                    {
+                        if (req.Send != null)
+                            Log.Warning("RESTConnector", "Do not use both Send & Form fields in a Request object.");
+
+                        List<IMultipartFormSection> form = new List<IMultipartFormSection>();
+                        try
+                        {
+                            foreach (var formData in req.Forms)
+                            {
+                                if (formData.Value.IsBinary)
+                                {
+                                    form.Add(new MultipartFormDataSection(formData.Key, formData.Value.Contents, formData.Value.MimeType));
+                                }
+                                else if (formData.Value.BoxedObject is string)
+                                {
+                                    form.Add(new MultipartFormDataSection(formData.Key, (string)formData.Value.BoxedObject));
+                                }
+                                else if (formData.Value.BoxedObject is int)
+                                {
+                                    form.Add(new MultipartFormDataSection(formData.Key, formData.Value.BoxedObject.ToString()));
+                                }
+                                else if (formData.Value.BoxedObject != null)
+                                {
+                                    Log.Warning("RESTConnector.ProcessRequestQueue()", "Unsupported form field type {0}", formData.Value.BoxedObject.GetType().ToString());
+                                }
+                            }
+                        }
+                        catch (Exception e)
+                        {
+                            Log.Error("RESTConnector.ProcessRequestQueue()", "Exception when initializing form: {0}", e.ToString());
+                        }
+
+                        watsonRequest = new WatsonRequest(url, form);
+                    }
+                    else if (req.Send == null)
+                    {
+                        watsonRequest = new WatsonRequest(url);
+                    }
+
+                    else
+                    {
+                        watsonRequest = new WatsonRequest(url, req.BodyJson);
+                    }
+
                     Runnable.Run(watsonRequest.Send(url, req.Headers));
 
                     while (!watsonRequest.IsComplete)
@@ -587,7 +632,7 @@ namespace IBM.Watson.DeveloperCloud.Connection
                 }
             }
 
-            // reduce the connection count before we exit..
+            // reduce the connection count before we exit.
             _activeConnections -= 1;
             yield break;
         }
@@ -674,7 +719,28 @@ namespace IBM.Watson.DeveloperCloud.Connection
             /// The response headers.
             /// </summary>
             public Dictionary<string, string> ResponseHeaders { get; set; }
+            private UnityWebRequest req;
+            
+            public WatsonRequest()
+            {
+                req = null;
+            }
 
+            public WatsonRequest(string url)
+            {
+                req = UnityWebRequest.Get(url);
+            }
+
+            public WatsonRequest(string url, string postData)
+            {
+                req = UnityWebRequest.Post(url, postData);
+            }
+
+            public WatsonRequest(string url, List<IMultipartFormSection> multipartFormSections)
+            {
+                req = UnityWebRequest.Post(url, multipartFormSections);
+            }
+            
             public IEnumerator Send(string url, Dictionary<string, string> headers)
             {
                 URL = url;
@@ -690,10 +756,15 @@ namespace IBM.Watson.DeveloperCloud.Connection
                 ServicePointManager.ServerCertificateValidationCallback = new RemoteCertificateValidationCallback(delegate { return true; });
 #endif
 
-                //  Create web request
-                UnityWebRequest req = new UnityWebRequest();
-                req.url = URL;
-                req.method = HttpMethod;
+                if(req == null)
+                {
+                    req = new UnityWebRequest();
+                }
+
+                if (!string.IsNullOrEmpty(HttpMethod))
+                {
+                    req.method = HttpMethod;
+                }
                 req.downloadHandler = new DownloadHandlerBuffer();
 
 
